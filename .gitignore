@@ -1,0 +1,28 @@
+# Build output
+dist/
+*.tsbuildinfo
+coverage/
+
+# Dependencies
+node_modules/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Editors & OS
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# CodeMap scan state (workspace-level only; should never appear here)
+.codemap/

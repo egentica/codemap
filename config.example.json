@@ -1,0 +1,54 @@
+{
+  "scan": {
+    "ignorePatterns": [
+      "node_modules/**",
+      ".git/**",
+      "dist/**",
+      "build/**",
+      ".codemap/**",
+      "*.test.ts",
+      "*.spec.ts"
+    ],
+    "maxFileSize": 1048576,
+    "maxDepth": null,
+    "followSymlinks": false,
+    "bypassHardcodedIgnoreList": false
+  },
+  
+  "plugins": {
+    "autoload": true,
+    "paths": [],
+    "enabled": [
+      "@egentica/codemap-parser-typescript",
+      "@egentica/codemap-parser-vue"
+    ],
+    "disabled": [],
+    "config": {
+      "@egentica/codemap-parser-typescript": {
+        "compilerOptions": {
+          "target": "ES2020"
+        }
+      }
+    }
+  },
+  
+  "backups": {
+    "enabled": true,
+    "dailyRetention": 5,
+    "turnRetention": 10
+  },
+  
+  "displayFilter": {
+    "hintSkipCount": 9,
+    "groupShowOnce": true
+  },
+  
+  "annotations": {
+    "writeAnnotationsToSource": false
+  },
+
+  "watcher": {
+    "watcherDisabled": false,
+    "port": 31347
+  }
+}
