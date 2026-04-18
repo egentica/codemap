@@ -1,0 +1,68 @@
+{
+  "name": "@egentica/codemap",
+  "version": "0.2.11",
+  "description": "Universal code knowledge graph for agentic AI Systems and MCPs.",
+  "keywords": [
+    "codemap",
+    "ast",
+    "knowledge-graph",
+    "code-analysis",
+    "plugin-architecture",
+    "typescript",
+    "dependency-graph",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "agentic-ai",
+    "symbol-graph",
+    "call-graph",
+    "refactoring",
+    "claude"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/egentica/codemap",
+    "directory": "packages/codemap"
+  },
+  "homepage": "https://egentica.ai",
+  "author": "Egentica",
+  "license": "LGPL-3.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "codemap-server": "./dist/mcp/server.js",
+    "codemap": "./dist/cli/index.js"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"require('fs').rmSync('dist', {recursive: true, force: true})\"",
+    "test": "vitest",
+    "prepublishOnly": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@types/ws": "^8.18.1",
+    "@vue/compiler-dom": "^3.4.0",
+    "minimatch": "^9.0.0",
+    "php-parser": "^3.1.5",
+    "typescript": "^5.9.3",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2",
+    "@types/node": "^25.5.0",
+    "@vitest/coverage-v8": "^1.6.1",
+    "@vitest/ui": "^1.6.1",
+    "vitest": "^1.6.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
