@@ -3,13 +3,14 @@
 > Universal code knowledge graph designed for Agentic AI systems
 
 [![npm version](https://img.shields.io/npm/v/@egentica/codemap.svg)](https://www.npmjs.com/package/@egentica/codemap)
-[![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-blue.svg)](https://opensource.org/licenses/LGPL-3.0)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Documentation](https://img.shields.io/badge/docs-egentica.ai-blue)](https://egentica.ai)
 [![GitHub](https://img.shields.io/badge/GitHub-egentica%2Fcodemap-181717?logo=github)](https://github.com/egentica/codemap)
 [![GitHub stars](https://img.shields.io/github/stars/egentica/codemap?style=social)](https://github.com/egentica/codemap)
 
 **CodeMap is hyperfocused on empowering AI agents like Claude to understand, navigate, and modify codebases with deep contextual awareness.** Built on AST-based parsing and a comprehensive knowledge graph, CodeMap gives AI agents the structural understanding they need to work effectively across sessions.
 
+**CodeMap is free and open source software, licensed under the [Apache License 2.0](./LICENSE.md).** Published by **Zapshark Technologies LLC** under the [Egentica](https://egentica.ai) brand — a growing suite of open-source agentic research, assistant, and developer tools.
 
 > 📚 **Full interactive documentation with live examples is available at [egentica.ai](https://egentica.ai)**
 
@@ -1538,4 +1539,7 @@ We welcome contributions! Please see [CONTRIBUTING.md](../../CONTRIBUTING.md) fo
 
 ## License
 
-LGPL-3.0 © Egentica
+Copyright © 2026 **Zapshark Technologies LLC**.  
+Licensed under the [Apache License, Version 2.0](./LICENSE.md). See [`NOTICE`](./NOTICE) for attribution details.
+
+Published under the [Egentica](https://egentica.ai) brand — part of a growing suite of open-source agentic research, assistant, and developer tools from Zapshark Technologies LLC.

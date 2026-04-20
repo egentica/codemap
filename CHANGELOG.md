@@ -1,5 +1,35 @@
 # Changelog
 
+## [0.2.12] - UNRELEASED
+
+**License change only.** This release moves `@egentica/codemap` from LGPL-3.0 to Apache-2.0. No code was added, removed, edited, or revised. 0.2.12 is 0.2.11 with license terms changed — nothing more.
+
+### Why now
+
+Egentica is preparing to release a full suite of open-source agentic research, assistant, and developer tools, and CodeMap is the first piece of that suite to ship publicly. Apache-2.0 is the industry-standard license for this class of software — platforms, SDKs, and developer tooling that commercial products and enterprises need to adopt, integrate, and extend without copyleft friction. It also carries the patent grant, defensive termination, and explicit contributor license that LGPL-3.0 does not, giving both consumers and contributors the protections expected of a serious platform release.
+
+Aligning CodeMap to Apache-2.0 now — before the rest of the Egentica suite ships — ensures one coherent license story across every tool in the platform from day one.
+
+### Changed
+
+- **License: LGPL-3.0 → Apache-2.0.** Versions **0.2.11 and earlier remain LGPL-3.0 in perpetuity** — all rights previously granted under that license are preserved and irrevocable. Starting with 0.2.12, the terms you receive are Apache-2.0.
+
+- **Copyright holder formalized** as **Zapshark Technologies LLC** (https://zapshark.com) in the `package.json` author field. Previously read `"Egentica"` as a bare string.
+
+### Added
+
+- **`NOTICE` file**, per Apache-2.0 § 4(d) attribution requirements. Downstream redistributors must preserve this file. The `files` array in `package.json` includes `NOTICE` so it ships in the published tarball.
+
+### Migration notes
+
+- **Downstream consumers on 0.2.11 or earlier:** nothing changes for the version you have. The LGPL-3.0 grant on those versions is irrevocable. When you upgrade to 0.2.12, the terms you receive switch to Apache-2.0. Update any NOTICE-aggregation tooling to preserve `NOTICE` from the tarball in your distributions.
+
+- **Functional equivalence:** 0.2.12 is a byte-for-byte reissue of 0.2.11's source code under new license terms. No behavior changes. No API changes. No bug fixes. If you are on 0.2.11 and do not need to update license terms, there is no reason to upgrade.
+
+### What's next
+
+0.2.12 is the **final planned release in the 0.2.x line**, bug fixes excepted. All new feature work lands in **0.3.x**.
+
 ## [0.2.11] - 2026-04-17
 
 **Pre-0.3.x stabilization release.** Carries forward bug fixes from internal 0.3.x work, introduces the AppData layout that future releases will build on, and ships with the experimental WatcherServer disabled by default. The `.codemap/` directory is now fully portable — everything machine-local lives in AppData.
