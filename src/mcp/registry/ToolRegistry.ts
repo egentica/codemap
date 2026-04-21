@@ -189,10 +189,19 @@ public async dispatch(
 
     for (const [name, tool] of this.tools) {
       try {
+        // TS2589 workaround (0.2.13 pnpm compatibility fix):
+        // MCP SDK's `registerTool` generic `InputArgs extends ZodRawShapeCompat
+        // | AnySchema` causes TS to do deep structural inference when we pass
+        // `z.ZodTypeAny`. Works fine under npm's flat node_modules, blows up
+        // with TS2589 under pnpm's symlink layout. The two casts steer TS into
+        // the ZodRawShapeCompat branch of the conditional callback type —
+        // zero runtime effect (MCP SDK's normalizeObjectSchema handles both
+        // raw-shape and full-schema inputs). A proper refactor to export
+        // ZodRawShape from tool files is planned for the 0.3.x line.
         server.registerTool(name, {
           description: tool.description,
-          inputSchema: tool.inputSchema,
-          outputSchema: tool.outputSchema
+          inputSchema: tool.inputSchema as unknown as Record<string, any>,
+          outputSchema: tool.outputSchema as unknown as Record<string, any> | undefined
         }, async (args, extra) => {
           if (!initTools.has(name) && (!ctx.codemap || !ctx.rootPath)) {
             return {

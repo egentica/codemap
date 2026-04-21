@@ -1,6 +1,26 @@
 # Changelog
 
-## [0.2.12] - UNRELEASED
+## [0.2.13] - 2026-04-21
+
+**Bug fix: pnpm compatibility.** Enables `@egentica/codemap` to compile cleanly inside pnpm workspaces, where it previously failed with TypeScript error `TS2589: Type instantiation is excessively deep and possibly infinite`. No behavior changes, no API changes — the fix is a two-line cast at one call site.
+
+### Context
+
+0.2.11 and 0.2.12 were authored and verified against npm's flat `node_modules` hoisting. Under that layout, TypeScript's type-checker short-circuited a deep generic inference on `McpServer.registerTool`'s callback signature. Under pnpm's symlink-based layout, the same inference can't short-circuit and exceeds the instantiation depth limit.
+
+The affected code is `ToolRegistry.registerAll()`, which iterates dynamically-loaded tools and registers each with the MCP server. Each tool exports `inputSchema = z.object({...})` (a full `ZodObject`). MCP SDK's `registerTool<InputArgs extends ZodRawShapeCompat | AnySchema>` expects either a raw shape (plain object `{ key: schema }`) or a full schema. Its runtime `normalizeObjectSchema` helper accepts both, so the mismatch is purely at the type level — TypeScript just has to pick a branch of a conditional type to resolve the callback signature, and under pnpm it tries too hard.
+
+### Fixed
+
+- **`src/mcp/registry/ToolRegistry.ts`** — two-line cast on `inputSchema` and `outputSchema` at the `server.registerTool(...)` call site steers TypeScript into the `ZodRawShapeCompat` branch of `BaseToolCallback`, bypassing the deep inference. Runtime behavior is unchanged — MCP SDK's `normalizeObjectSchema` handles the full-schema form we actually pass.
+
+### Migration notes
+
+- **npm users on 0.2.11 or 0.2.12:** you are not affected. The code compiles fine under npm's flat hoisting. 0.2.13 is byte-equivalent to 0.2.12 at runtime.
+- **pnpm users:** 0.2.13 is the first version that type-checks and builds under pnpm's symlink resolution. If you were stuck on 0.2.12 with a TS2589 error, upgrade.
+- **Yarn Berry users:** not verified either way. The root cause is symlink-based layout vs flat hoisting; yarn's pnp mode is likely affected similarly and likely also fixed by this release.
+
+## [0.2.12] - 2026-04-20
 
 **License change only.** This release moves `@egentica/codemap` from LGPL-3.0 to Apache-2.0. No code was added, removed, edited, or revised. 0.2.12 is 0.2.11 with license terms changed — nothing more.
 
