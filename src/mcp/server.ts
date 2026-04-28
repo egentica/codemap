@@ -170,7 +170,10 @@ async function initializeCodeMap(projectRoot: string, performScan: boolean = tru
     provider,
     agentMode: true,
     ignorePatterns: config.scan?.ignorePatterns,
-    bypassHardcodedIgnoreList: config.scan?.bypassHardcodedIgnoreList
+    bypassHardcodedIgnoreList: config.scan?.bypassHardcodedIgnoreList,
+    // 'auto' enables disk-cache when .codemap/ exists. Cold start becomes
+    // load-cache + mtime-checked walk, instead of full reparse.
+    persistGraph: 'auto'
   });
   
   // Auto-load bundled parsers (TypeScript and Vue)
@@ -196,12 +199,75 @@ async function initializeCodeMap(projectRoot: string, performScan: boolean = tru
   
   // Perform initial scan if requested
   if (performScan) {
-    // Always scan fresh - MCP is long-lived, persistence not needed
-    console.error('[CodeMap] Performing full scan...');
-    await codemap.scan();
-    
-    const stats = codemap.getStats();
-    console.error(`[CodeMap] Scan complete: ${stats.files} files, ${stats.symbols} symbols`);
+    // Try to restore the graph from the on-disk cache first.
+    let restoredFromCache = false;
+    try {
+      restoredFromCache = await codemap.loadGraph();
+    } catch (err) {
+      console.error('[CodeMap] Failed to load graph cache:', err);
+    }
+
+    if (restoredFromCache) {
+      // Cache hit: incremental verification on the main thread. With
+      // mtime-skip, this completes sub-second on a 3000-file project,
+      // so we keep it synchronous and the orient response includes
+      // fully-current data.
+      console.error('[CodeMap] Restored graph from cache; verifying...');
+      await codemap.scan();
+      const stats = codemap.getStats();
+      console.error(`[CodeMap] Verification complete: ${stats.files} files, ${stats.symbols} symbols`);
+      try {
+        await codemap.saveGraph();
+      } catch (err) {
+        console.error('[CodeMap] Initial graph save failed:', err);
+      }
+      codemap.startAutoSave();
+      codemap.markWarmupReady();
+    } else {
+      // Cache miss (truly cold start): index in a background worker
+      // so this function returns immediately and the orient response
+      // doesn't lock up. Tools that touch the graph will see a
+      // warmup-in-progress state via isWarmingUp(); writes will block
+      // briefly on the warmup gate. The worker writes the cache, and
+      // the main thread loads it back when the worker signals done.
+      console.error('[CodeMap] No cache available; spawning background indexer...');
+      // Capture a stable reference — module-level `codemap` may be
+      // reassigned later (e.g. by a different orient call).
+      const cm = codemap;
+      cm
+        .scanInBackground()
+        .then(async () => {
+          const stats = cm.getStats();
+          console.error(
+            `[CodeMap] Background indexing complete: ${stats.files} files, ${stats.symbols} symbols`
+          );
+          // Belt-and-suspenders save. The worker's own saveGraph runs
+          // inside the worker thread; if it failed silently, or if
+          // scanInBackground fell back to a main-thread scan (which
+          // doesn't save), graph.json wouldn't be on disk despite the
+          // in-memory graph being populated. Saving here from the
+          // parent guarantees the cache exists after cold-start.
+          try {
+            await cm.saveGraph();
+          } catch (err) {
+            console.error('[CodeMap] Post-index save failed (non-fatal):', err);
+          }
+          // Start auto-save AFTER the worker has populated the graph,
+          // so the timer doesn't race the worker's own graph.json write.
+          cm.startAutoSave();
+        })
+        .catch(async (err) => {
+          console.error('[CodeMap] Background indexing failed:', err);
+          // Even on failure, try to persist whatever's in memory — a
+          // partial graph beats no graph for next boot.
+          try {
+            await cm.saveGraph();
+          } catch {
+            // Already failing; swallow secondary errors.
+          }
+          cm.startAutoSave();
+        });
+    }
   }
   
   // Setup config lockdown
@@ -441,27 +507,42 @@ async function main() {
   // Register all tools with the MCP server
   registry.registerAll(server, ctx);
   
-  // Attempt silent auto-recovery before opening transport.
-  // If successful, tools work immediately without a manual orient call.
-  // If it fails for any reason, ctx stays null and the user orients normally.
-  await attemptAutoRecovery(ctx);
-
-  // Connect via stdio transport
+  // Connect via stdio transport FIRST so the MCP is immediately
+  // responsive. Auto-recovery runs in the background after this so a
+  // truly-cold (no cache) project can't lock up boot — the worker
+  // thread does its scan while the transport already accepts tool
+  // calls. Tools that arrive before recovery completes return
+  // NOT_INITIALIZED until orient or recovery populates ctx.
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  // Start watcher after transport is live (needs ctx fully populated by auto-recovery)
-  // Will be re-started on orient/session_start if auto-recovery was skipped
+  // Start watcher with the (possibly empty) ctx — it captures by
+  // reference and reads ctx.codemap at request time, so it'll see the
+  // populated project once recovery or orient runs.
   if (watcherConfig && !watcherConfig.disabled) {
     watcherServer = new WatcherServer(registry, ctx, watcherConfig);
     watcherServer.start();
     (ctx as any).__watcherServer = watcherServer;
     (ctx as any).__watcherConfig = watcherConfig;
   }
-  
+
   console.error('[CodeMap MCP] Server running on stdio');
   console.error('[CodeMap MCP] Loaded', registry.count, 'tools');
-  console.error('[CodeMap MCP] Waiting for orient or session_start to initialize project...');
+
+  // Fire-and-forget auto-recovery. If a state file exists, this
+  // populates ctx.codemap and (on cache miss) kicks off the
+  // background indexer. If no state file, it returns false and the
+  // user orients manually.
+  attemptAutoRecovery(ctx)
+    .then((recovered) => {
+      if (!recovered) {
+        console.error('[CodeMap MCP] Waiting for orient or session_start to initialize project...');
+      }
+      // Note: success log is emitted by attemptAutoRecovery itself.
+    })
+    .catch((err) => {
+      console.error('[CodeMap] Auto-recovery error (non-fatal):', err);
+    });
 }
 
 // ── Entry Point ──────────────────────────────────────────────────────────────

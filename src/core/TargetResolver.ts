@@ -28,6 +28,27 @@
 
 import * as path from 'node:path';
 
+// Inline `toCanonical` so this CommonJS-compiled module doesn't have to
+// `require('@egentica/api')`. The api package is ESM-only (no `require`
+// export), so a static require chokes Node with ERR_PACKAGE_PATH_NOT_EXPORTED
+// the moment this file loads. Until @egentica/api ships a dual-package
+// (CJS+ESM) build, we keep a local copy here.
+const CANONICAL_SEP = '/';
+const ANY_SEP = /[\\/]+/g;
+
+/**
+ * Convert a path of any form to canonical (forward-slash) form. Idempotent.
+ * UNC paths (`\\server\share` or `//server/share`) are preserved as
+ * forward-slash UNC.
+ */
+function toCanonical(p: string): string {
+  if (p.length === 0) return p;
+  if (p.startsWith('\\\\') || p.startsWith('//')) {
+    return `//${p.slice(2).replaceAll(ANY_SEP, CANONICAL_SEP).replace(/^\/+/, '')}`;
+  }
+  return p.replaceAll(ANY_SEP, CANONICAL_SEP);
+}
+
 /**
  * Path format for output.
  */
@@ -319,6 +340,8 @@ export class TargetResolver {
 
   /**
    * Convert absolute path to project-relative with forward slashes.
+   * Separator handling delegates to @egentica/api's `toCanonical`, the
+   * canonical path-form authority for the platform.
    */
   private toRelativePath(absolutePath: string): string {
       const normalized = path.normalize(absolutePath);
@@ -326,10 +349,12 @@ export class TargetResolver {
 
       if (normalized.startsWith(normalizedRoot)) {
           const rel = normalized.slice(normalizedRoot.length);
-          return rel.split(path.sep).filter(Boolean).join('/');
+          // Strip any leading separator before canonicalizing so the
+          // result is purely the project-relative remainder.
+          return toCanonical(rel.replace(/^[\\/]+/, ''));
       }
 
-      return normalized.split(path.sep).join('/');
+      return toCanonical(normalized);
   }
 
   /**

@@ -73,6 +73,7 @@ import type { TemplateStore } from './TemplateStore';
 import type { ProjectHelpStore } from './ProjectHelpStore';
 import type { SummaryStore } from './SummaryStore.js';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { FileSystemGraph } from './FileSystemGraph';
 import { FileSystemIO } from './FileSystemIO';
 import { TargetResolver } from './TargetResolver';
@@ -241,6 +242,32 @@ export class CodeMap implements CodeMapHost {
    * Track whether graph has been modified since last save.
    */
   private _graphDirty: boolean = false;
+
+  /**
+   * Auto-save timer handle. Periodically persists the graph during long
+   * sessions so a crash never costs more than the interval.
+   */
+  private _autoSaveTimer?: ReturnType<typeof setInterval>;
+
+  /**
+   * Auto-save interval — 15 minutes is the sweet spot between freshness
+   * and write volume for a long-running MCP session.
+   */
+  private _autoSaveIntervalMs: number = 15 * 60 * 1000;
+
+  /**
+   * Resolves once the initial scan after construction has settled. Write
+   * paths await this so they don't race the cache verification sweep.
+   */
+  private _warmupReady: Promise<void>;
+  private _warmupResolve!: () => void;
+
+  /**
+   * True while a background worker is performing the initial cold scan.
+   * Read-side tools and the main-thread scan() short-circuit on this so
+   * we don't double-scan or block the orient response.
+   */
+  private _warmupInProgress: boolean = false;
   
   /**
    * Query engine (search and traversal).
@@ -263,7 +290,13 @@ export class CodeMap implements CodeMapHost {
     this.rootPath = config.rootPath;
     this.agentMode = config.agentMode ?? false;
     this.provider = config.provider ?? defaultFsProvider;
-    
+
+    // Create the warm-up gate up front so write paths can await it even
+    // if they're invoked before the first scan completes.
+    this._warmupReady = new Promise<void>((resolve) => {
+      this._warmupResolve = resolve;
+    });
+
     // Initialize all core components via factory
     const init = CodeMapCoreInit.initialize({
       rootPath: config.rootPath,
@@ -333,6 +366,14 @@ export class CodeMap implements CodeMapHost {
     directoriesScanned: number;
     durationMs: number;
   }> {
+    // If a background worker is already indexing this project, the
+    // graph is being populated asynchronously. Don't trigger a duplicate
+    // main-thread scan — the worker's results will land via loadGraph()
+    // when it completes.
+    if (this._warmupInProgress) {
+      return { filesScanned: 0, directoriesScanned: 0, durationMs: 0 };
+    }
+
     // Auto-load parsers and plugins on first scan (only if not already loaded)
     // Use PluginFacade's parser registry (handles MCP server manual loading)
     if (!this._parsersLoaded && this._pluginFacade.getParserCount() === 0) {
@@ -389,14 +430,196 @@ export class CodeMap implements CodeMapHost {
     await this._graphPersistence.save(this.graph);
     this._graphDirty = false;
   }
-  
+
+  /**
+   * Start the periodic background save timer.
+   *
+   * Once running, the graph is flushed to `.codemap/graph.json` every
+   * `_autoSaveIntervalMs` whenever it's dirty. Idempotent — calling
+   * twice has no effect. Safe to call when persistence is disabled
+   * (it'll just no-op).
+   */
+  startAutoSave(): void {
+    if (this._autoSaveTimer || !this._graphPersistence) return;
+    this._autoSaveTimer = setInterval(() => {
+      this.saveGraph().catch((err) => {
+        console.error('[CodeMap] Auto-save failed:', err);
+      });
+    }, this._autoSaveIntervalMs);
+    // Don't keep the process alive just for this timer.
+    if (typeof this._autoSaveTimer === 'object' && this._autoSaveTimer !== null) {
+      const handle = this._autoSaveTimer as { unref?: () => void };
+      handle.unref?.();
+    }
+  }
+
+  /**
+   * Stop the periodic background save timer. Idempotent.
+   */
+  stopAutoSave(): void {
+    if (this._autoSaveTimer) {
+      clearInterval(this._autoSaveTimer);
+      this._autoSaveTimer = undefined;
+    }
+  }
+
+  /**
+   * Promise that resolves once the initial scan after construction has
+   * settled. Write tools await this to avoid racing the verification
+   * sweep that runs after a cache restore.
+   */
+  get warmupReady(): Promise<void> {
+    return this._warmupReady;
+  }
+
+  /**
+   * Mark the warm-up window closed. Called once by the host (server.ts)
+   * after the initial scan completes. Idempotent — subsequent calls are
+   * harmless because `_warmupResolve` is a no-op after first resolution.
+   */
+  markWarmupReady(): void {
+    this._warmupResolve();
+  }
+
+  /**
+   * True while a background worker is performing the cold scan.
+   *
+   * The MCP server checks this to surface an "indexing in progress"
+   * hint in the orient response so the AI knows graph-dependent tools
+   * may return partial results until indexing completes.
+   */
+  isWarmingUp(): boolean {
+    return this._warmupInProgress;
+  }
+
+  /**
+   * Index the project on a worker thread without blocking the caller.
+   *
+   * Spawns scan-worker.js, which builds a fresh graph from disk and
+   * persists it to `.codemap/graph.json`. When the worker finishes,
+   * this CodeMap instance loads the cache, marks warmup ready, and
+   * resolves the returned promise.
+   *
+   * On worker failure, falls back to a main-thread `scan()` so warmup
+   * still completes — never leaves the gate locked indefinitely.
+   *
+   * Caller pattern: kick this off (don't await), let the constructor's
+   * orient response return immediately, and trust the background
+   * pipeline to populate the graph and release the write gate.
+   */
+  scanInBackground(): Promise<void> {
+    if (this._warmupInProgress) {
+      // Already running — return a promise that resolves when warmup
+      // settles so multiple callers all see completion.
+      return this._warmupReady;
+    }
+
+    this._warmupInProgress = true;
+
+    // Locate the compiled worker entry. After tsc build, scan-worker.js
+    // sits next to CodeMap.js inside dist/core/ — the same directory as
+    // this compiled file. CommonJS gives us __dirname for free.
+    const workerScript = path.resolve(__dirname, 'scan-worker.js');
+
+    return new Promise<void>((resolve, reject) => {
+      const finalize = (err?: Error) => {
+        this._warmupInProgress = false;
+        this.markWarmupReady();
+        if (err) reject(err);
+        else resolve();
+      };
+
+      let worker: Worker;
+      try {
+        worker = new Worker(workerScript, {
+          workerData: {
+            rootPath: this.rootPath,
+            ignorePatterns: this._metadataManager.config.ignorePatterns,
+            bypassHardcodedIgnoreList:
+              this._metadataManager.config.bypassHardcodedIgnoreList,
+          },
+        });
+      } catch (err) {
+        // Worker couldn't even spawn — fall back to a main-thread scan
+        // so the project still gets indexed.
+        console.error(
+          '[CodeMap] Failed to spawn scan-worker; falling back to main thread:',
+          err
+        );
+        this._warmupInProgress = false;
+        this.scan()
+          .then(() => {
+            this.markWarmupReady();
+            resolve();
+          })
+          .catch((scanErr) => {
+            this.markWarmupReady();
+            reject(scanErr);
+          });
+        return;
+      }
+
+      worker.on('message', (msg: { type: string; [k: string]: unknown }) => {
+        if (msg.type === 'scan:starting') {
+          // Informational only.
+          return;
+        }
+        if (msg.type === 'scan:complete') {
+          // Worker has written .codemap/graph.json. Load it back into
+          // this instance's graph so subsequent tool calls see real data.
+          this.loadGraph()
+            .then(() => {
+              worker.terminate().catch(() => {});
+              finalize();
+            })
+            .catch((err) => {
+              worker.terminate().catch(() => {});
+              finalize(err instanceof Error ? err : new Error(String(err)));
+            });
+          return;
+        }
+        if (msg.type === 'scan:error') {
+          worker.terminate().catch(() => {});
+          // Worker failed mid-scan — fall back to main-thread scan so
+          // the graph eventually populates.
+          console.error(
+            '[CodeMap] scan-worker failed; falling back to main thread:',
+            msg.error
+          );
+          this._warmupInProgress = false;
+          this.scan()
+            .then(() => {
+              this.markWarmupReady();
+              resolve();
+            })
+            .catch((scanErr) => {
+              this.markWarmupReady();
+              reject(scanErr);
+            });
+        }
+      });
+
+      worker.on('error', (err) => {
+        worker.terminate().catch(() => {});
+        finalize(err instanceof Error ? err : new Error(String(err)));
+      });
+
+      worker.on('exit', (code) => {
+        if (code !== 0 && this._warmupInProgress) {
+          finalize(new Error(`scan-worker exited unexpectedly (code ${code})`));
+        }
+      });
+    });
+  }
+
   /**
    * Close and cleanup.
-   * 
-   * Auto-saves graph if dirty, then disposes of all resources.
-   * Call this before discarding the CodeMap instance.
+   *
+   * Stops the auto-save timer, flushes the graph if dirty, then disposes
+   * of all resources. Call this before discarding the CodeMap instance.
    */
   async close(): Promise<void> {
+    this.stopAutoSave();
     await this.saveGraph();
     await this.dispose();
   }
@@ -1001,6 +1224,19 @@ export class CodeMap implements CodeMapHost {
         console.error('[SymbolGraph] Background processing failed:', err);
       }
     });
+
+    // If the graph is already populated (cache loaded, or background
+    // worker scan completed before the builder was initialized), kick
+    // off processing now in the background. The scan:complete listener
+    // above only fires for FUTURE scans, so without this branch the
+    // symbol graph would stay empty until the next file write or
+    // codemap_reindex call. Fire-and-forget so callers (orient) return
+    // fast — the symbol graph populates in the background.
+    if (this.graph.getAllFiles().length > 0) {
+      this._symbolGraphBuilder.processAllFiles().catch((err) => {
+        console.error('[SymbolGraph] Initial processing failed:', err);
+      });
+    }
   }
   
   /**
@@ -1010,9 +1246,16 @@ export class CodeMap implements CodeMapHost {
    */
   private setupGraphReparseHooks(): void {
     // Auto re-parse files after writes to keep graph current
+    // -- Gate writes on warm-up first, so a write that lands during the
+    // post-cache verification sweep doesn't race the parser. Once the
+    // initial scan resolves, this is effectively free.
+    this.eventBus.on('file:write:before', async () => {
+      await this._warmupReady;
+    });
     this.eventBus.on('file:write:after', async (payload: any) => {
       const { path: absolutePath } = payload;
       if (!absolutePath) return;
+      this._graphDirty = true;
       
       const relativePath = path.relative(this.rootPath, absolutePath).replace(/\\/g, '/');
       let fileEntry = this.graph.getFile(relativePath);
@@ -1058,6 +1301,7 @@ export class CodeMap implements CodeMapHost {
     // Remove files from graph when deleted
     this.eventBus.on('file:delete', async (payload: any) => {
       const { path: absolutePath } = payload;
+      this._graphDirty = true;
       if (!absolutePath) return;
       
       const relativePath = path.relative(this.rootPath, absolutePath).replace(/\\/g, '/');
@@ -1073,6 +1317,7 @@ export class CodeMap implements CodeMapHost {
     // Handle file rename/move: remove old + add new
     this.eventBus.on('file:rename', async (payload: any) => {
       const { oldPath: oldAbsolutePath, newPath: newAbsolutePath } = payload;
+      this._graphDirty = true;
       if (!oldAbsolutePath || !newAbsolutePath) return;
       
       const oldRelativePath = path.relative(this.rootPath, oldAbsolutePath).replace(/\\/g, '/');

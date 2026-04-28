@@ -66,6 +66,17 @@ export const handler: ToolHandler<typeof inputSchema> = async (args, ctx) => {
     markdown += `- **Files:** ${stats.files}\\n`;
     markdown += `- **Symbols:** ${stats.symbols}\\n`;
     markdown += `- **Dependencies:** ${stats.dependencies}\\n\\n`;
+
+    // If a background worker is indexing this project, surface that
+    // up front so the AI knows graph-dependent tools may return
+    // partial or empty results until indexing completes.
+    const warmupCheck = ctx.codemap as { isWarmingUp?: () => boolean };
+    if (typeof warmupCheck.isWarmingUp === 'function' && warmupCheck.isWarmingUp()) {
+      markdown += `## Indexing in Progress\n\n`;
+      markdown += `This is a fresh project — CodeMap is indexing files in a background worker. The graph will be ready in a few seconds.\n\n`;
+      markdown += `**Until indexing completes:** graph-aware tools (search, peek, get_dependencies, impact_analysis, find_relevant) may return partial or empty results. File I/O tools (read_file, write, replace_text) work normally. Writes will block briefly until indexing finishes.\n\n`;
+      markdown += `Re-run codemap_orient in a few seconds to see full stats.\n\n`;
+    }
     
     // Load ALL persistent stores (lazy loading - only when oriented)
     await ctx.codemap.groupStore.load();

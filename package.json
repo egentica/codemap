@@ -1,6 +1,6 @@
 {
   "name": "@egentica/codemap",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "description": "A universal suite of MCP-native and node.js API tools for agentic AI, researchers, and developers to map, knowledge-graph, and work with structured code and other artifacts.",
   "keywords": [
     "codemap",

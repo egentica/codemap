@@ -165,6 +165,11 @@ export class Scanner {
     let filesScanned = 0;
     let directoriesScanned = 0;
     
+    // Track files seen during this walk so we can prune entries for files
+    // that were deleted externally (relevant when graph was restored from
+    // cache and the on-disk state has drifted).
+    const seenFiles = new Set<string>();
+
     // Walk directory tree using strategy
     await this.directoryWalker.walk('', 0, {
       onDirectory: (dirEntry) => {
@@ -172,11 +177,20 @@ export class Scanner {
         directoriesScanned++;
       },
       onFile: async (relativePath, stats) => {
+        seenFiles.add(relativePath);
         await this.processFile(relativePath, stats);
         filesScanned++;
       },
       debugLog: (message) => this.debugLog('[Walker] ' + message)
     });
+
+    // Prune files that exist in the graph but are no longer on disk.
+    const cachedFiles = this.graph.getAllFiles();
+    for (const cached of cachedFiles) {
+      if (!seenFiles.has(cached.relativePath)) {
+        this.graph.removeFile(cached.relativePath);
+      }
+    }
     
     // Build dependency graph using strategy
     this.dependencyResolver.buildDependencyGraph();
@@ -205,12 +219,20 @@ export class Scanner {
     stats: { size: number; mtime: number }
   ): Promise<void> {
     const absolutePath = path.join(this.rootPath, relativePath);
-    
+
+    // Fast path: if the graph already has this file with the same mtime,
+    // it hasn't changed since we last parsed it. Skip the read + parse —
+    // this is what makes a cache-restored graph cheap to verify.
+    const existingEntry = this.graph.getFile(relativePath);
+    if (existingEntry && existingEntry.lastModified === stats.mtime) {
+      return;
+    }
+
     const fileEntry: FileEntry = {
       name: path.basename(absolutePath),
       relativePath,
-      summary: '',
-      tags: [],
+      summary: existingEntry?.summary ?? '',
+      tags: existingEntry?.tags ?? [],
       references: [],
       referencedBy: [],
       dirPath: path.dirname(relativePath) || '.',
@@ -218,7 +240,7 @@ export class Scanner {
       lastModified: stats.mtime,
       lastSummarized: Date.now()
     };
-    
+
     this.graph.addFile(fileEntry);
     
     let content: string;

@@ -1,5 +1,32 @@
 # Changelog
 
+## [0.2.14] - 2026-04-28
+
+**Stability fix: startup crash under module-resolution edge cases, plus a startup-responsiveness fix for cold starts.** Three fixes, all targeting the path from "MCP server boot" to "first tool call returns useful data". No API changes.
+
+### Context
+
+0.2.13 unblocked pnpm builds, but a downstream change to one of CodeMap's workspace dependencies (now ESM-only, with no CommonJS export entry) caused the MCP server to crash at startup the moment it tried to `require()` that dependency. The crash happened after the MCP `initialize` handshake but before any tool registered, so clients saw a server that connected, then died silently.
+
+While digging into that, two related startup issues surfaced:
+
+1. **First-time orient blocked the conversation.** On a fresh project (no cached graph), `codemap_orient` would not return until the full file scan completed — typically 20–60 seconds for medium repos, longer for monorepos. During that window the MCP client appeared frozen.
+2. **The symbol-level call graph never populated on cache-hit boots.** The builder hooked `scan:complete`, but `loadGraph()` (used when reading a cached graph from disk) doesn't emit that event. So sessions that started from cache had `symbolGraph: { symbolCount: 0, edgeCount: 0 }` until the next file write triggered a re-parse.
+
+### Fixed
+
+- **`src/core/TargetResolver.ts`** — Removed `import { toCanonical } from '@egentica/api'` and inlined the function (along with its `CANONICAL_SEP` and `ANY_SEP` constants) directly. The dependency is ESM-only (`"type": "module"`, no `"require"` key in its `exports` map), and CodeMap's compiled output is CommonJS. Static `require()` resolution failed at module load with `ERR_PACKAGE_PATH_NOT_EXPORTED` before any error handler could fire. Inlining is a stop-gap until the upstream package ships a dual-package CJS+ESM build; the inline copy is functionally identical to the source it replaces.
+
+- **`src/core/CodeMap.ts`, `src/mcp/server.ts`, `src/core/scan-worker.ts` (new)** — Cold-start scans now run in a Node Worker thread. `codemap_orient` returns immediately with stats showing `Files: 0` and an "Indexing in Progress" banner. Tools that need the graph (search, peek, get_dependencies, etc.) may return partial results until the worker finishes. File writes (`codemap_write`, `codemap_replace_text`, etc.) are gated on a one-shot warmup promise — they wait for indexing to complete before applying, then proceed normally. Cache-hit boots are unchanged: when `.codemap/graph.json` exists, the graph loads synchronously and orient returns with full stats as before.
+
+- **`src/core/CodeMap.ts` — `initializeSymbolGraphBuilder()`** — When the builder is initialized and the graph already has files (cache-hit boot, or a worker-thread scan that completed before the builder was ready), processing now starts immediately in the background. Previously the builder only reacted to future `scan:complete` events, which left the symbol graph empty until something else triggered a re-parse. The fix is fire-and-forget: orient still returns fast, and the symbol graph populates on its own within a few seconds of the regular graph being ready.
+
+### Migration notes
+
+- **No API changes.** All public exports are unchanged. Existing code consuming `CodeMap`, the MCP server, or any tool surface keeps working without modification.
+- **Cold-start behavior is now non-blocking.** If you have automation or scripts that called `codemap_orient` and immediately followed up with graph queries, they'll now see a brief window where queries return empty or partial results. Either re-run `codemap_orient` after a few seconds (the "Indexing in Progress" banner disappears once the worker finishes), or use file I/O tools — those will wait correctly via the warmup gate.
+- **Worker Threads requirement.** The cold-start worker uses Node's built-in `worker_threads` module, which is available in all supported Node versions (18+). If `worker_threads` is unavailable in the runtime (rare — some constrained serverless environments), the scan falls back to the main thread automatically and the previous synchronous behavior returns.
+
 ## [0.2.13] - 2026-04-21
 
 **Bug fix: pnpm compatibility.** Enables `@egentica/codemap` to compile cleanly inside pnpm workspaces, where it previously failed with TypeScript error `TS2589: Type instantiation is excessively deep and possibly infinite`. No behavior changes, no API changes — the fix is a two-line cast at one call site.
